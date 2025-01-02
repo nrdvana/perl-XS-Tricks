@@ -103,18 +103,20 @@ but consider these benefits:
     need to call a perl-level DESTROY function.
   * Magic can be applied equally to any type of ref, so you can use one pattern for
     whaetever you are blessing, or even let the user choose what kind of ref it will be.
+  * You can even use Moo or Moose to create the object, then attach your magic to
+    whatever ref the object system created.
   * You get a callback when a new Perl thread starts and attempts to clone your object.
     (letting you clone it, or throw an exception that it can't be cloned which is at
     least nicer to the user than a segfault would be)
 
-With that in mind, lets take a look at the boilerplate.
+With that in mind, lets begin suffering through the boilerplate.
 
 ## Defining Magic
 
 Magic is described with "struct MGVTBL":
 
 ```
-static int YourProject_LibWhatver_destroy(pTHX_ SV* sv, MAGIC* mg) {
+static int YourProject_LibWhatver_magic_free(pTHX_ SV* sv, MAGIC* mg) {
   LibWhatever_obj *obj= (LibWhaever_obj*) mg->mg_ptr;
   LibWhaever_destroy(obj);
 }
@@ -134,8 +136,10 @@ static MGVTBL YourProject_LibWhatever_magic_vtbl= {
   0, /* set */
   0, /* length */
   0, /* clear */
-  YourProject_LibWhatever_destroy, /* free */
+  YourProject_LibWhatever_magic_free, /* free */
+#ifdef MGf_COPY
   0, /* copy magic to new variable */
+#endif
 #ifdef MGf_DUP
   YourProject_LibWhatever_magic_dup /* dup for new threads */
 #endif
@@ -145,8 +149,11 @@ static MGVTBL YourProject_LibWhatever_magic_vtbl= {
 };
 ```
 
-This struct is static, so only one exists in the entire program.  It's just metadata
-telling perl how to handle your particular type of extension magic.
+You only need one static inctance for each type of magic your module creates.  It's just
+metadata telling perl how to handle your particular type of extension magic.  The ifdefs
+are from past versions of the struct that had fewer fields, though if your module is
+requiring perl 5.8 you can assume 'copy' and 'dup' exist, and from 5.10 'local' always
+exists as well.
 
 Next, the recipe to attach it to a new Perl object:
 
@@ -175,9 +182,9 @@ SV * my_wrapper(LibWhatever_obj *cstruct) {
 
 The key there is 'sv_magicext'.  Note that you're applying it to the thing being
 referred to, not the scalarref that you use for the call to `sv_bless`.
-The messy `ifdef` part is due to the 'dup' fild of the magic table only being
+The messy `ifdef` part is due to the 'dup' field of the magic table only being
 used when perl was compiled with threading support.  The reference to
-YourProject_LibWhatever_magic_vtbl is both an instruction for Perl to know what
+`YourProject_LibWhatever_magic_vtbl` is both an instruction for Perl to know what
 functions to call, but also a unique value used to identify *your* extension
 magic from anyone else's.
 
@@ -210,7 +217,7 @@ faster than verifying the inheritance of the blessed package name.
 
 So there you go - you can now attach your C structs with magic.
 
-## Convenience
+## Convenience via Typemap
 
 In a typical wrapper around a C library, you're going to be writing a lot of methods
 that need to call YourProject_LibWhatever_from_magic on the first argument.  To make
@@ -232,7 +239,18 @@ method1(self, param1)
     RETVAL
 ```
 
-With a typemap:
+With a typemap entry like:
+
+```
+TYPEMAP
+LibWhatever_obj*        O_LibWhatever_obj
+
+INPUT
+O_LibWhatever_obj
+  $var= YourProject_LibWhatever_from_magic($arg);
+  if (!$var) croak("Not an instance of LibWhatever");
+```
+the XS method becomes
 
 ```
 IV
@@ -245,16 +263,6 @@ method1(obj, param1)
     RETVAL
 ```
 
-and the typemap entry:
-```
-TYPEMAP
-LibWhatever_obj*        O_LibWhatever_obj
-
-INPUT
-O_LibWhatever_obj
-  $var= YourProject_LibWhatever_from_magic($arg);
-  if (!$var) croak("Not an instance of LibWhatever");
-```
 
 If you have some functions that take an optional LibWhatever_obj pointer, try this trick:
 
@@ -292,7 +300,7 @@ O_Maybe_LibWhatever_obj
 ```
 
 If you want to save a bit of compiled .so file size, you can move the error message
-into the 'get' function, with a flag:
+into the 'from_magic' function, with a flag:
 
 ```
 #define OR_DIE 1
@@ -337,4 +345,202 @@ one of your blessed objects if it wasn't defined, in the style of Perl's
 `open my $fh, ...`, or maybe an option to add the magic to an existing object created
 by a pure-perl constructor.  Do whatever makes sense for your API.
 
+## More Than One Pointer
 
+In all the examples so far, I'm storing a single pointer to a type defined in the
+external C library being wrapped.  Chances are, though, you need to store more than just
+that one pointer.
+
+Imagine a poorly-written C library where you need to call "somelib_create" to get the
+object, then a series of "somelib_setup" calls before any other function can be used,
+then if you want to call "somelib_go" you have to first call "somelib_prepare" or else
+it segfaults.  You could track these states in perl variables in a hashref, but it would
+just be easier if they were all present in a local C struct of your creation.
+
+So, rather than attaching a pointer to the library struct with magic, you can attach
+your own allocated struct, and your struct can have a pointer to all the library details.
+For extra convenience, your struct can also have a pointer to the perl object which it
+is attached to, which lets you access that object from other methods you write which
+won't have access to the perl stack.
+
+```
+struct YourProject_objinfo {
+  SomeLib_obj *obj;
+  HV *wrapper;
+  bool started_setup, finished_setup;
+  bool did_prepare;
+};
+
+struct YourProject_objinfo*
+YourProject_objinfo_create() {
+  struct YourProject_objinfo *objinfo= NULL;
+  Newxz(objinfo, 1, struct YourProject_objinfo);
+  /* other setup here ... */
+  return objinfo;
+}
+
+void
+YourProject_objinfo_free(struct YourProject_objinfo *objinfo) {
+  if (objinfo->obj) {
+    SomeLib_obj_destroy(objinfo->obj);
+  }
+  /* other cleanup here ... */
+  Safefree(objinfo);
+}
+
+static int YourProject_objinfo_magic_free(pTHX_ SV* sv, MAGIC* mg) {
+  YourProject_objinfo_free((struct YourProject_objinfo *) mg->mg_ptr);
+}
+
+
+```
+
+One other thing that has changed from the previous scenario is that you can allocate
+this struct and attach it to the object whenever you want, instead of waiting for the
+user to call the function that creates the instance of `SomeLib_obj`.  This gives you
+more flexible ways to deal with creation of the magic.
+
+Here's a pattern I like:
+
+```
+#define OR_DIE 1
+#define AUTOCREATE 2
+
+struct YourProject_objinfo*
+YourProject_objinfo_from_magic(SV *objref, int flags) {
+  SV *sv;
+  MAGIC* magic;
+
+  if (!sv_isobject(objref))
+    /* could also check package hierarchy here, but that slows things down */
+    croak("Not an instance of YourProject");
+
+  sv= SvRV(objref);
+  if (SvMAGICAL(sv)) {
+    /* Iterate magic attached to this scalar, looking for one with our vtable */
+    for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
+      if (magic->mg_type == PERL_MAGIC_ext
+       && magic->mg_virtual == &YourProject_SomeLib_magic_vtbl)
+        /* If found, the mg_ptr points to the fields structure. */
+        return (SomeLib_obj*) magic->mg_ptr;
+  }
+  if (flags & AUTOCREATE) {
+    struct YourProject_objinfo *ret= YourProject_objinfo_create();
+    ret->wrapper= (HV*) sv;
+    magic= sv_magicext(sv, NULL, PERL_MAGIC_ext,
+      &YourProject_SomeLib_magic_vtbl, (const char*) ret, 0);
+#ifdef USE_ITHREADS
+    magic->mg_flags |= MGf_DUP;
+#else
+    (void)magic; // suppress warning
+#endif
+    return ret;
+  }
+  if (flags & OR_DIE)
+    croak("Not an initialized instance of YourProject");
+  return NULL;
+}
+
+typedef struct YourProject_objinfo Maybe_YourProject_objinfo;
+typedef struct YourProject_objinfo Auto_YourProject_objinfo;
+
+```
+Then in the typemap:
+
+```
+TYPEMAP
+struct YourProject_objinfo*  O_YourProject_objinfo
+Maybe_YourProject_objinfo*   O_Maybe_YourProject_objinfo
+Auto_YourProject_objinfo*    O_Auto_YourProject_objinfo
+
+INPUT
+O_YourProject_objinfo
+  $var= YourProject_objinfo_from_magic($arg, OR_DIE);
+
+INPUT
+O_Maybe_YourProject_objinfo
+  $var= YourProject_objinfo_from_magic($arg, 0);
+
+INPUT
+O_Auto_YourProject_objinfo
+  $var= YourProject_objinfo_from_magic($arg, AUTOCREATE);
+```
+
+Then use it in your XS methods to conveniently implement your sanity checks for this
+annoying C library:
+
+```
+
+# This is called by the pure-perl constructor, after blessing the hashref
+void
+_init(objinfo, param1, param2)
+  Auto_YourProject_objinfo* objinfo
+  IV param1
+  IV param2
+  PPCODE:
+    if (objinfo->obj)
+      croak("Already initialized");
+    objinfo->obj= SomeLib_create(param1, param2);
+    if (!objinfo->obj)
+      croak("SomeLib_create failed: %s", SomeLib_get_last_error());
+    XSRETURN(0);
+
+bool
+_is_initialized(objinfo)
+  Maybe_YourProject_objinfo* objinfo
+  CODE:
+    RETVAL= objinfo != NULL && objinfo->obj != NULL;
+  OUTPUT:
+    RETVAL
+
+void
+setup(objinfo, key, val)
+  struct YourProject_objinfo* objinfo
+  const char *key
+  const char *val
+  PPCODE:
+    if (objinfo->finished_setup)
+      croak("Cannot call 'setup' after 'prepare'");
+    if (!SomeLib_setup(objinfo->obj, key, val))
+      croak("SomeLib_setup failed: %s", SomeLib_get_last_error());
+    objinfo->setup_started= true;
+    XSRETURN(0);
+
+void
+prepare(objinfo)
+  struct YourProject_objinfo* objinfo
+  PPCODE:
+    if (!objinfo->started_setup)
+      croak("Must call setup at least once before 'prepare'");
+    objinfo->finished_setup= true;
+    if (!SomeLib_prepare(objinfo->obj))
+      croak("SomeLib_prepare failed: %s", SomeLib_get_last_error());
+    objinfo->did_prepare= true;
+    XSRETURN(0);
+
+void
+somelib_go(objinfo)
+  struct YourProject_objinfo* objinfo
+  PPCODE:
+    if (!objinfo->did_prepare)
+      croak("Must call 'prepare' before 'go'");
+    if (!SomeLib_go(objinfo->obj))
+      croak("SomeLib_go failed: %s", SomeLib_get_last_error());
+    XSRETURN(0);
+```
+
+Like how clean the XS methods got?
+
+## Conclusion
+
+When you use the pattern above, your module becomes almost foolproof against misuse.
+You provide helpful errors for the Perl coder to guide them toward correct usage of
+the library with easy-to-understand errors (well, depending on how much effort you
+spend on that) and they don't have to pull their hair out trying to log all the API
+calls and compare to the C library documentation to figure out which one happened in
+the wrong order resulting in a mysterious crash.
+
+The code above is all assuming that the C library is providing objects whose lifespan
+*you* are in control of.  Many times, the objects from a C library will have some
+other lifespan that the user can't directly control with the perl objects.  I'll
+cover some techniques for dealing with that in the next article.
