@@ -22,13 +22,13 @@ C code runs an order of magntude faster than perl opcodes, so if you're going to
 require the end user to use a compiled module, I feel you might as well go all the
 way and put as much of the wrapper library code in XS as possible.
 
-## Linking Perl Objects to C Objects
+## Binding Perl Objects to C Objects
 
 One of the first things you'll need to do for any C library which allocates "objects"
-is to link them to a matching Perl object, usually a blessed scalar ref or hash ref.
+is to bind them to a matching Perl object, usually a blessed scalar ref or hash ref.
 (The C language doesn't have official objects of course, but a library often allocates
 a struct or opaque pointer with a lifespan and a destructor function that they expect
-you to call when you're done with it.)
+you to call when you're done with it, which is the same theme as an object.)
 
 If you read through the common tutorials, you'll probably see a recipe like
 
@@ -220,7 +220,7 @@ So there you go - you can now attach your C structs with magic.
 ## Convenience via Typemap
 
 In a typical wrapper around a C library, you're going to be writing a lot of methods
-that need to call YourProject_LibWhatever_from_magic on the first argument.  To make
+that need to call `YourProject_LibWhatever_from_magic` on the first argument.  To make
 that easier, lets move this decoding step to the typemap.
 
 Without a typemap:
@@ -351,9 +351,9 @@ In all the examples so far, I'm storing a single pointer to a type defined in th
 external C library being wrapped.  Chances are, though, you need to store more than just
 that one pointer.
 
-Imagine a poorly-written C library where you need to call "somelib_create" to get the
-object, then a series of "somelib_setup" calls before any other function can be used,
-then if you want to call "somelib_go" you have to first call "somelib_prepare" or else
+Imagine a poorly-written C library where you need to call `SomeLib_create` to get the
+object, then a series of `SomeLib_setup` calls before any other function can be used,
+then if you want to call `SomeLib_go` you have to first call `SomeLib_prepare` or else
 it segfaults.  You could track these states in perl variables in a hashref, but it would
 just be easier if they were all present in a local C struct of your creation.
 
@@ -372,9 +372,10 @@ struct YourProject_objinfo {
 };
 
 struct YourProject_objinfo*
-YourProject_objinfo_create() {
+YourProject_objinfo_create(HV *wrapper) {
   struct YourProject_objinfo *objinfo= NULL;
   Newxz(objinfo, 1, struct YourProject_objinfo);
+  objinfo->wrapper= wrapper;
   /* other setup here ... */
   return objinfo;
 }
@@ -391,7 +392,6 @@ YourProject_objinfo_free(struct YourProject_objinfo *objinfo) {
 static int YourProject_objinfo_magic_free(pTHX_ SV* sv, MAGIC* mg) {
   YourProject_objinfo_free((struct YourProject_objinfo *) mg->mg_ptr);
 }
-
 
 ```
 
@@ -425,8 +425,10 @@ YourProject_objinfo_from_magic(SV *objref, int flags) {
         return (SomeLib_obj*) magic->mg_ptr;
   }
   if (flags & AUTOCREATE) {
-    struct YourProject_objinfo *ret= YourProject_objinfo_create();
-    ret->wrapper= (HV*) sv;
+    struct YourProject_objinfo *ret;
+    if (SvTYPE(sv) != SVt_PVHV)
+      croak("Expected blessed hashref");
+    ret= YourProject_objinfo_create((HV*)sv);
     magic= sv_magicext(sv, NULL, PERL_MAGIC_ext,
       &YourProject_SomeLib_magic_vtbl, (const char*) ret, 0);
 #ifdef USE_ITHREADS
