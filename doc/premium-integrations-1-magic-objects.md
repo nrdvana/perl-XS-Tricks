@@ -1,16 +1,16 @@
-Premium XS Integrations, Part 1
+Premium XS Integration, Part 1
 ===============================
 
 There are two main schools of thought on how to interface external C code with Perl.
 The first is that XS should be used to wrap all the messy low level work required for
 using the C library.  The other is that the external C functions should be exposed to
-perl using an extremely minimal XS layer, or the Foreign Function Interface (FFI) and
+Perl using an extremely minimal XS layer, or the Foreign Function Interface (FFI) and
 all the logic for working with the library should be written in Perl.
 
 I subscribe to the former.  My reasons are runtime speed, and ease of debugging for
-the perl scripts.  If you consider that the average C library is an awkward mess of
+the Perl scripts.  If you consider that the average C library is an awkward mess of
 state machines and lightly-enforced state requirements that will segfault if not
-carefully obeyed, wrapping that nicely for the perl developer is going to require a
+carefully obeyed, wrapping that nicely for the Perl developer is going to require a
 lot of data translation and runtime sanity checks.  If you skip those runtime sanity
 checks in your wrapper library, it drags down the efficiency of your subsequent Perl
 development to the level of C development, which is to say, sitting around scratching
@@ -18,7 +18,7 @@ your head for hours wondering why the program keeps segfaulting.
 If you write those runtime checks in Perl, your runtime performance can suffer
 significantly.  If you write those runtime checks in XS, you can actually do quite a
 lot of them before there's any notable decrease in the performance of the script.
-C code runs an order of magntude faster than perl opcodes, so if you're going to
+C code runs an order of magnitude faster than Perl opcodes, so if you're going to
 require the end user to use a compiled module, I feel you might as well go all the
 way and put as much of the wrapper library code in XS as possible.
 
@@ -59,7 +59,7 @@ DESTROY(self)
 ```
 
 This is about the least effort/overhead you can have for binding a C data structure
-to a perl blessed sclar ref, and freeing it when the Perl object goes out of scope.
+to a Perl blessed scalar ref, and freeing it when the Perl object goes out of scope.
 (you can also move some of this code to the typemap, but I'll come back to that later)
 
 I don't like this pattern for several reasons:
@@ -68,14 +68,14 @@ I don't like this pattern for several reasons:
     your scalar ref and then when the first object goes out of scope it runs the
     destructor, and the other object is now referring to freed memory and will
     probably segfault during its next use.
-  * When you create a new thread in a threaded perl, it clones objects, creating the
+  * When you create a new thread in a threaded Perl, it clones objects, creating the
     same bug.
-  * The pointer is stored as an integer visible to perl, and could get altered by
-    sloppy/buggy perl code, and then you get a segfault.
+  * The pointer is stored as an integer visible to Perl, and could get altered by
+    sloppy/buggy Perl code, and then you get a segfault.
   * A user could subclass the XS object, and write their own DESTROY method that
     forgets to call `$self->SUPER::DESTROY`, leaking the C object.
-  * Sloppy/buggy perl code could re-bless the class, also bypassing the `DESTROY` call.
-  * Sloppy/buggy perl code could call DESTROY on something which isn't the blessed
+  * Sloppy/buggy Perl code could re-bless the class, also bypassing the `DESTROY` call.
+  * Sloppy/buggy Perl code could call DESTROY on something which isn't the blessed
     scalar-ref containing a valid pointer.
 
 While most of these scenarios *shouldn't* happen, if by unfortunate circumstances they
@@ -87,22 +87,22 @@ XS author and don't know about these pitfalls.
 A much more reliable way to link the C structs to the Perl blessed refs is through
 Perl's "magic" system.  Magic is the name for essentially a pointer within the
 SV/AV/HV of your object which points to a linked list of C metadata.  This metadata
-describes various things, like operator-overloading or ties or other low-level perl
+describes various things, like operator-overloading or ties or other low-level Perl
 features.  One type of magic is reserved for "extensions" (that's you!)
 
 There is a fair amount of effort and boilerplate to set up magic on your objects,
 but consider these benefits:
 
   * You are guaranteed that only the object your C code created will carry the pointer
-    to your C struct, and no sloppy/buggy perl-level operations can break that.
+    to your C struct, and no sloppy/buggy Perl-level operations can break that.
   * If the magic-attached pointer isn't present, you can cleanly die with an error
     message to the user that somehow they have called your XS method on something that
     isn't your object.
   * Your C-function destructor is described by the magic metadata, and does not rely
-    on a DESTROY perl method.  This also makes destruction faster if Perl doesn't
-    need to call a perl-level DESTROY function.
+    on a DESTROY Perl method.  This also makes destruction faster if Perl doesn't
+    need to call a Perl-level DESTROY function.
   * Magic can be applied equally to any type of ref, so you can use one pattern for
-    whaetever you are blessing, or even let the user choose what kind of ref it will be.
+    whatever you are blessing, or even let the user choose what kind of ref it will be.
   * You can even use Moo or Moose to create the object, then attach your magic to
     whatever ref the object system created.
   * You get a callback when a new Perl thread starts and attempts to clone your object.
@@ -149,10 +149,10 @@ static MGVTBL YourProject_LibWhatever_magic_vtbl= {
 };
 ```
 
-You only need one static inctance for each type of magic your module creates.  It's just
-metadata telling perl how to handle your particular type of extension magic.  The ifdefs
+You only need one static instance for each type of magic your module creates.  It's just
+metadata telling Perl how to handle your particular type of extension magic.  The ifdefs
 are from past versions of the struct that had fewer fields, though if your module is
-requiring perl 5.8 you can assume 'copy' and 'dup' exist, and from 5.10 'local' always
+requiring Perl 5.8 you can assume 'copy' and 'dup' exist, and from 5.10 'local' always
 exists as well.
 
 Next, the recipe to attach it to a new Perl object:
@@ -181,7 +181,7 @@ SV * my_wrapper(LibWhatever_obj *cstruct) {
 ```
 
 The key there is 'sv_magicext'.  Note that you're applying it to the thing being
-referred to, not the scalarref that you use for the call to `sv_bless`.
+referred to, not the scalar ref that you use for the call to `sv_bless`.
 The messy `ifdef` part is due to the 'dup' field of the magic table only being
 used when perl was compiled with threading support.  The reference to
 `YourProject_LibWhatever_magic_vtbl` is both an instruction for Perl to know what
@@ -354,14 +354,14 @@ that one pointer.
 Imagine a poorly-written C library where you need to call `SomeLib_create` to get the
 object, then a series of `SomeLib_setup` calls before any other function can be used,
 then if you want to call `SomeLib_go` you have to first call `SomeLib_prepare` or else
-it segfaults.  You could track these states in perl variables in a hashref, but it would
+it segfaults.  You could track these states in Perl variables in a hash ref, but it would
 just be easier if they were all present in a local C struct of your creation.
 
 So, rather than attaching a pointer to the library struct with magic, you can attach
 your own allocated struct, and your struct can have a pointer to all the library details.
-For extra convenience, your struct can also have a pointer to the perl object which it
+For extra convenience, your struct can also have a pointer to the Perl object which it
 is attached to, which lets you access that object from other methods you write which
-won't have access to the perl stack.
+won't have access to the Perl stack.
 
 ```
 struct YourProject_objinfo {
@@ -420,9 +420,9 @@ YourProject_objinfo_from_magic(SV *objref, int flags) {
     /* Iterate magic attached to this scalar, looking for one with our vtable */
     for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
       if (magic->mg_type == PERL_MAGIC_ext
-       && magic->mg_virtual == &YourProject_SomeLib_magic_vtbl)
+       && magic->mg_virtual == &YourProject_objinfo_magic_vtbl)
         /* If found, the mg_ptr points to the fields structure. */
-        return (SomeLib_obj*) magic->mg_ptr;
+        return (struct YourProject_objinfo*) magic->mg_ptr;
   }
   if (flags & AUTOCREATE) {
     struct YourProject_objinfo *ret;
@@ -430,7 +430,7 @@ YourProject_objinfo_from_magic(SV *objref, int flags) {
       croak("Expected blessed hashref");
     ret= YourProject_objinfo_create((HV*)sv);
     magic= sv_magicext(sv, NULL, PERL_MAGIC_ext,
-      &YourProject_SomeLib_magic_vtbl, (const char*) ret, 0);
+      &YourProject_objinfo_magic_vtbl, (const char*) ret, 0);
 #ifdef USE_ITHREADS
     magic->mg_flags |= MGf_DUP;
 #else
@@ -544,5 +544,5 @@ the wrong order resulting in a mysterious crash.
 
 The code above is all assuming that the C library is providing objects whose lifespan
 *you* are in control of.  Many times, the objects from a C library will have some
-other lifespan that the user can't directly control with the perl objects.  I'll
+other lifespan that the user can't directly control with the Perl objects.  I'll
 cover some techniques for dealing with that in the next article.
