@@ -87,7 +87,7 @@ but consider these benefits:
     (letting you clone it, or throw an exception that it can't be cloned which is at
     least nicer to the user than a segfault would be)
 
-With that in mind, lets begin suffering through the boilerplate.
+With that in mind, lets begin suffering through the details.
 
 ## Defining Magic
 
