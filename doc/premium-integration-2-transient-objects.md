@@ -38,7 +38,7 @@ the Screen objects during the Display constructor.
 
 If the list of Screens were dynamic, or if I just didn't want to allocate them all
 upfront for some reason, another approach is to wrap the C structs on demand.
-You could literally create a new Object each time they access the struct, but you'd
+You could literally create a new wrapper object each time they access the struct, but you'd
 probably want to return the same object if they access two references to the same
 struct.  One way to accomplish this is with a hash of weak references.
 
@@ -90,9 +90,9 @@ Meanwhile, if the caller releases that reference, the SubObject gets garbage
 collected, and likewise for MainObject if they release that reference.
 
 One downside of this exact design is that *every* method of SubObject which uses
-data_ptr will need to first check that main_ref isn't closed.  If you have frequent
-method calls and you'd like them to be a little more efficient, here's an alternate
-variation on the pattern:
+data_ptr will need to first check that main_ref isn't closed (like shown in `method1`).
+If you have frequent method calls and you'd like them to be a little more efficient, here's
+an alternate version of the same idea:
 
 ```
 package MainObject {
@@ -233,7 +233,6 @@ to create or destroy SubObject, we just encounter these pointers in the return v
 C library functions, and need to wrap them in order to show them to the perl script.
 
 ```
-
 /* Return a new ref to an existing wrapper, or create a new wrapper and cache it.
  */
 SV * YourProject_SubObject_wrap(SomeLib_SubObject *sub_obj) {
@@ -258,7 +257,7 @@ SV * YourProject_SubObject_wrap(SomeLib_SubObject *sub_obj) {
   if (!subobj_entry) croak("lvalue hv_fetch failed"); /* should never happen */
 
   /* weak references may have become undef */
-  if (*subobj_entry && SvROK(*subobj_entry) && SvOK(SvRV(*subobj_entry)))
+  if (*subobj_entry && SvROK(*subobj_entry))
     /* we can re-use the existing wrapper */
     return newRV_inc( SvRV(*subobj_entry) );
   
@@ -312,16 +311,26 @@ Now, the Typemap:
 
 ```
 TYPEMAP
-SomeLib_MainObject*      O_SomeLib_MainObject
-SomeLib_SubObject*       O_SomeLib_SubObject
+struct YourProject_MainObject_info * O_SomeLib_MainObject_info
+SomeLib_MainObject*                  O_SomeLib_MainObject
+struct YourProject_SubObject_info *  O_SomeLib_SubObject_info
+SomeLib_SubObject*                   O_SomeLib_SubObject
 
 INPUT
-O_SomeLib_MainObject
+O_SomeLib_MainObject_info
   $var= YourProject_MainObject_from_magic($arg, OR_DIE);
 
 INPUT
-O_SomeLib_SubObject
+O_SomeLib_MainObject
+  $var= YourProject_MainObject_from_magic($arg, OR_DIE)->obj;
+
+INPUT
+O_SomeLib_SubObject_info
   $var= YourProject_SubObject_from_magic($arg, OR_DIE);
+
+INPUT
+O_SomeLib_SubObject
+  $var= YourProject_SubObject_from_magic($arg, OR_DIE)->obj;
 
 OUTPUT
 O_SomeLib_SubObject
@@ -335,8 +344,12 @@ pointer that we see in *any* of the SomeLib API calls, and get the desired resul
 There's nothing stopping you from automatically wrapping MainObject pointers with an OUTPUT
 typemap, but that's prone to errors because sometimes an API returns a pointer to the
 already-existing MainObject, and you don't want perl to put a second wrapper on the same
-MainObject.  For objects like MainObject, I prefer to special-case my constructor (or whatever
-method initializes the instance of SomeLib_MainObject) with a call to
+MainObject.  This problem doesn't apply to SubObject, because we re-use any existing wrapper
+by checking the cache.  (of course, you could apply the same trick to MainObject and have
+a global cache of all the known MainObject wrappers, and actually I do this in X11::Xlib)
+
+But in general, for objects like MainObject I prefer to special-case my constructor
+(or whatever method initializes the instance of SomeLib_MainObject) with a call to
 `_from_magic(..., AUTOCREATE)` on the INPUT typemap rather than returning the pointer and
 letting perl's typemap wrap it on OUTPUT.
 
@@ -355,6 +368,73 @@ function_that_returns_subobjects(main)
   SomeLib_MainObject *main
 
 ```
-
 and XS translation handles the rest!
+
+## Finding the MainObject for a SubObject
+
+Now, you maybe noticed that I made the convenient assumption that the C library has a function
+that looks up the MainObject of a SubObject:
+
+```
+SomeLib_MainObject *main_obj= SomeLib_SubObject_get_main(sub_obj);
+```
+
+That isn't always the case.  Sometimes the library authors assume you have both pointers handy
+and don't bother to give you a function to look one up from the other.
+
+The easiest workaround is if you can assume that any function which returns a SubObject also
+took a parameter of the MainObject as an input.  Then, just standardize the variable name given
+to the MainObject and use that variable name in the typemap macro.
+
+```
+OUTPUT
+O_SomeLib_SubObject
+  sv_setsv($arg, sv_2mortal(YourProject_SubObject_wrap(main, $var)));
+```
+This macro blindly assumes that 'main' will be in scope where the macro gets expanded:
+
+```
+SomeLib_SubObject *
+function_that_returns_subobjects(main)
+  SomeLib_MainObject *main
+```
+
+But, what if it isn't?  What if the C API is basically walking a linked list, and
+you want to expose it to Perl so that people can write
+
+```
+for (my $subobj= $main->first; $subobj; $subobj= $subobj->next) {
+  ...
+}
+```
+
+Well, if they have a subobject wrapper, then it knows the main object, so you just need to
+look at that SubObject info's pointer to 'parent' (the MainObject) and make that available for
+the construction of the next subobject wrapper:
+
+```
+SomeLib_SubObject *
+next(prev_obj_info)
+  struct YourProject_SubObject_info *prev_obj_info;
+  INIT:
+    SomeLib_MainObject *main= prev_obj_info->parent;
+  CODE:
+    RETVAL= SomeLib_SubObject_next(prev_obj_info->obj);
+  OUTPUT:
+    RETVAL
+```
+
+So, now there is a variable 'main' in scope when it's time for the typemap to construct a
+wrapper for the SomeLib_SubObject.
+
+## Conclusion
+
+In Perl, the lifespan of objects is nicely defined: the destructor runs when the last reference
+is lost, and you use a pattern of strong and weak references to control the order the
+destructors run.  In C, the lifespan of objects is dictated by the underlying library, and you
+might need to go to some awkward lengths to track which ones the Perl user is holding onto,
+and then flag those objects when they become invalid.  While somewhat awkward, it's very
+*possible* thanks to weak references and hashtables on the C pointer address, and the users of
+your XS library will probably be thankful when they get a useful error message about violating
+the lifecycle of objects, instead of a mysterious segfault.
 
