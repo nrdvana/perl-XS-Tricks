@@ -15,10 +15,10 @@ new(class, some_data)
   SV *class;
   IV some_data;
   INIT:
-    LibWhaever_obj *obj;
+    LibWhatever_obj *obj;
   CODE:
-    obj= LibWhaever_create(some_data);
-    if (!obj) croak("LibWhaever_create failed");
+    obj= LibWhatever_create(some_data);
+    if (!obj) croak("LibWhatever_create failed");
     RETVAL= (SV*) newRV_noinc(newSViv((IV)obj));
     sv_bless(RETVAL, gv_stashpv("YourProject::LibWhatever", GV_ADD));
   OUTPUT:
@@ -28,12 +28,11 @@ void
 DESTROY(self)
   SV *self;
   INIT:
-    LibWhaever_obj *obj;
+    LibWhatever_obj *obj;
   PPCODE:
-    obj= (LibWhaever_obj*) SvIV(SvRV(self));
-    LibWhaever_destroy(obj);
+    obj= (LibWhatever_obj*) SvIV(SvRV(self));
+    LibWhatever_destroy(obj);
     XSRETURN(0);
-
 ```
 
 This is about the least effort/overhead you can have for binding a C data structure
@@ -94,13 +93,17 @@ With that in mind, lets begin suffering through the details.
 Magic is described with "struct MGVTBL":
 
 ```
-static int YourProject_LibWhatver_magic_free(pTHX_ SV* sv, MAGIC* mg) {
-  LibWhatever_obj *obj= (LibWhaever_obj*) mg->mg_ptr;
-  LibWhaever_destroy(obj);
+static int
+YourProject_LibWhatever_magic_free(pTHX_ SV* sv, MAGIC* mg) {
+  LibWhatever_obj *obj= (LibWhatever_obj*) mg->mg_ptr;
+  LibWhatever_destroy(obj);
 }
 
 #ifdef USE_ITHREADS
-static int YourProject_LibWhatever_magic_dup(pTHX_ MAGIC *mg, CLONE_PARAMS *param) {
+static int
+YourProject_LibWhatever_magic_dup(pTHX_ MAGIC *mg,
+  CLONE_PARAMS *param)
+{
   croak("This object cannot be shared between threads");
   return 0;
 };
@@ -176,7 +179,7 @@ LibWhatever_obj* YourProject_LibWhatever_from_magic(SV *objref) {
   if (SvROK(objref)) {
     sv= SvRV(objref);
     if (SvMAGICAL(sv)) {
-      /* Iterate magic attached to this scalar, looking for one with our vtable */
+      /* Iterate magic attached to this scalar to find our vtable */
       for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
         if (magic->mg_type == PERL_MAGIC_ext
          && magic->mg_virtual == &YourProject_LibWhatever_magic_vtbl)
@@ -283,14 +286,15 @@ into the 'from_magic' function, with a flag:
 ```
 #define OR_DIE 1
 
-LibWhatever_obj* YourProject_LibWhatever_from_magic(SV *objref, int flags) {
+LibWhatever_obj*
+YourProject_LibWhatever_from_magic(SV *objref, int flags) {
   SV *sv;
   MAGIC* magic;
 
   if (SvROK(objref)) {
     sv= SvRV(objref);
     if (SvMAGICAL(sv)) {
-      /* Iterate magic attached to this scalar, looking for one with our vtable */
+      /* Iterate magic attached to this scalar to find our vtable */
       for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
         if (magic->mg_type == PERL_MAGIC_ext
          && magic->mg_virtual == &YourProject_LibWhatever_magic_vtbl)
@@ -367,7 +371,8 @@ YourProject_objinfo_free(struct YourProject_objinfo *objinfo) {
   Safefree(objinfo);
 }
 
-static int YourProject_objinfo_magic_free(pTHX_ SV* sv, MAGIC* mg) {
+static int
+YourProject_objinfo_magic_free(pTHX_ SV* sv, MAGIC* mg) {
   YourProject_objinfo_free((struct YourProject_objinfo *) mg->mg_ptr);
 }
 
@@ -390,12 +395,12 @@ YourProject_objinfo_from_magic(SV *objref, int flags) {
   MAGIC* magic;
 
   if (!sv_isobject(objref))
-    /* could also check package hierarchy here, but that slows things down */
+    /* could also check 'sv_derived_from' here, but that's slow */
     croak("Not an instance of YourProject");
 
   sv= SvRV(objref);
   if (SvMAGICAL(sv)) {
-    /* Iterate magic attached to this scalar, looking for one with our vtable */
+    /* Iterate magic attached to this scalar to find our vtable */
     for (magic= SvMAGIC(sv); magic; magic = magic->mg_moremagic)
       if (magic->mg_type == PERL_MAGIC_ext
        && magic->mg_virtual == &YourProject_objinfo_magic_vtbl)
@@ -450,7 +455,6 @@ Then use it in your XS methods to conveniently implement your sanity checks for 
 annoying C library:
 
 ```
-
 # This is called by the pure-perl constructor, after blessing the hashref
 void
 _init(objinfo, param1, param2)
