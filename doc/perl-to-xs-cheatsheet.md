@@ -80,7 +80,7 @@ knowledge of the situation.
   $x->{1}                             SV **field= sv_fetchs((HV*) SvRV(x), "1", 0)
   for (my ($k, $v)= each %h)          for (hv_iterinit(hv); ent= hv_iternext(hv);) {
                                         SV *k= hv_iterkeysv(ent);
-					                              SV *v= hv_iterval(hv, ent);
+                                        SV *v= hv_iterval(hv, ent);
                                       }
   # get a list of hash key/val        /* see "Advanced Recipe: unwrap_hash" below */
   # even if tied:                     IV len;
@@ -101,6 +101,8 @@ knowledge of the situation.
   ref $x                              sv_ref(NULL, SvRV(x), 1)
   $y= ref $x                          sv_ref(y, SvRV(x), 1)
   bless $x, "Class"                   sv_bless(x, gv_stashpv("Class", GV_ADD))
+                                      /* careful, bypasses overridden 'isa' methods */
+  $x->isa("Class")                    sv_derived_from(x, "Class")
 ```
 
 ### Error Handling
@@ -231,9 +233,9 @@ process_params(self, ...)
       sv_list= unwrap_hashref(SvRV(ST(1)), &sv_count);
     }
     else {
-      if (items & 1) croak("Expected even-length list, or hashref");
+      if (!(items & 1)) croak("Expected even-length list, or hashref");
       sv_list= PL_stack_base+ax + 1;
-	  	sv_count= items - 1;
+      sv_count= items - 1;
     }
     for (i= 0; i < sv_count; i+= 2) {
       SV *key= sv_list[i];
@@ -255,11 +257,11 @@ into lvalue subs.  The macro assumes you have a variable named 'stash' in curren
 ```
 #define MAKE_SUB_AN_LVALUE(x) make_sub_an_lvalue(aTHX_ stash, #x)
 static void make_sub_an_lvalue(pTHX_ HV *stash, const char *name) {
-	CV *method_cv;
-	GV *method_gv;
-	if (!(method_gv= gv_fetchmethod(stash, name))
-		|| !(method_cv= GvCV(method_gv)))
-		croak("Missing method %s", name);
-	CvLVALUE_on(method_cv);
+  CV *method_cv;
+  GV *method_gv;
+  if (!(method_gv= gv_fetchmethod(stash, name))
+    || !(method_cv= GvCV(method_gv)))
+    croak("Missing method %s", name);
+  CvLVALUE_on(method_cv);
 }
 ```
