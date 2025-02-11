@@ -198,6 +198,18 @@ faster than verifying the inheritance of the blessed package name.
 
 So there you go - you can now attach your C structs with magic.
 
+In the comments, Leon T. points out that you should really be using mg_findext instead of the
+for() loop:
+
+```
+magic= mg_findext(sv, PERL_MAGIC_ext, &YourProject_LibWhatever_magic_vtbl);
+if (magic)
+  return (LibWhatever_obj*) magic->mg_ptr;
+```
+
+He's right, you should... but iterating the linked list without a function call will be a tiny
+bit faster.  :-)
+
 ## Convenience via Typemap
 
 In a typical wrapper around a C library, you're going to be writing a lot of methods
