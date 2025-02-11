@@ -77,8 +77,8 @@ knowledge of the situation.
   delete $x{1}                        hv_delete(x, "1", 1, G_DISCARD)
   $y= delete $x{1}                    sv_setsv(y, hv_delete(x, "1", 1, 0))
   my $x= {}                           x= newRV_noinc((SV*)newHV())
-  $x->{1}                             SV **field= sv_fetchs((HV*) SvRV(x), "1", 0)
-  for (my ($k, $v)= each %h)          for (hv_iterinit(hv); ent= hv_iternext(hv);) {
+  $x->{1}                             SV **field= hv_fetchs((HV*) SvRV(x), "1", 0)
+  while (my ($k, $v)= each %h)        for (hv_iterinit(hv); ent= hv_iternext(hv);) {
                                         SV *k= hv_iterkeysv(ent);
                                         SV *v= hv_iterval(hv, ent);
                                       }
